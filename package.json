@@ -1,6 +1,6 @@
 {
   "name": "hellocsv",
-  "displayName": "Hello CSV",
+  "displayName": "Hello CSV - Tabular Viewer & Editor",
   "description": "Interactive, theme-aware CSV & TSV tabular viewer and editor for Visual Studio Code.",
   "version": "0.2.0",
   "publisher": "sunaram",
