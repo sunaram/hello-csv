@@ -1,0 +1,17 @@
+ID,First Name,Last Name,Email,Gender,Country,Annual Spend,Join Date,Status
+1001,Alice,Johnson,alice.johnson@example.com,Female,United States,1450.50,2023-01-15,Active
+1002,Bob,Smith,bob.smith@example.org,Male,Canada,820.00,2022-11-20,Active
+1003,Charlie,Brown,charlie.b@example.net,Non-binary,United Kingdom,2340.75,2021-06-05,Inactive
+1004,Diana,Prince,diana.p@themyscira.gov,Female,Greece,5120.00,2020-03-12,Active
+1005,Evan,Wright,evan.wright@example.co.uk,Male,Australia,340.20,2023-09-01,Pending
+1006,Fiona,Gallagher,fiona.g@chicago.edu,Female,United States,780.90,2022-04-18,Active
+1007,George,Costanza,george@vandelay.com,Male,United States,120.00,2019-12-31,Inactive
+1008,Hannah,Abbott,hannah.abbott@hogsmeade.uk,Female,United Kingdom,1650.40,2023-05-14,Active
+1009,Ian,Malcolm,ian.m@ingen.com,Male,Costa Rica,4500.00,2021-08-22,Active
+1010,Julia,Roberts,julia.r@hollywood.com,Female,United States,9800.50,2020-10-10,Active
+1011,Kevin,Flynn,kevin.flynn@encom.com,Male,United States,3200.00,2018-07-09,Active
+1012,Laura,Croft,lara.croft@manor.co.uk,Female,United Kingdom,7600.25,2021-02-14,Active
+1013,Michael,Scott,m.scott@dundermifflin.com,Male,United States,650.00,2019-04-01,Active
+1014,Nadia,Comaneci,nadia@olympics.org,Female,Romania,2900.00,2022-07-18,Inactive
+1015,Oscar,Martinez,oscar.m@dundermifflin.com,Male,United States,1850.70,2021-11-11,Active
+

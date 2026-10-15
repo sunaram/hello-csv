@@ -1,0 +1,93 @@
+{
+  "name": "hello-csv",
+  "displayName": "Hello CSV",
+  "description": "Interactive, theme-aware CSV & TSV tabular viewer and editor for Visual Studio Code.",
+  "version": "0.2.0",
+  "publisher": "sunaram",
+  "icon": "media/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sunaram/hello-csv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sunaram/hello-csv/issues"
+  },
+  "homepage": "https://github.com/sunaram/hello-csv#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "csv",
+    "tsv",
+    "table",
+    "editor",
+    "viewer",
+    "preview",
+    "data",
+    "tabular",
+    "excel",
+    "sheets"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:hello-csv.preview"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "hello-csv.preview",
+        "title": "Preview with Hello CSV",
+        "category": "Hello CSV",
+        "icon": "$(table)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "hello-csv.preview",
+          "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceExtname == .txt",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "hello-csv.preview",
+          "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceLangId == 'csv' || resourceLangId == 'tsv'",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "hello-csv.preview",
+          "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceLangId == 'csv' || resourceLangId == 'tsv'",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "build": "node esbuild.js --production",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/test-parser.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/papaparse": "^5.3.14",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.3"
+  }
+}
