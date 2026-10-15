@@ -43,12 +43,13 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   // Primary command
-  const previewCommand = vscode.commands.registerCommand('hello-csv.preview', handlePreview);
+  const previewCommand = vscode.commands.registerCommand('hellocsv.preview', handlePreview);
 
-  // Backward compatibility alias command
+  // Backward compatibility alias commands
+  const aliasCommand = vscode.commands.registerCommand('hello-csv.preview', handlePreview);
   const legacyCommand = vscode.commands.registerCommand('csv-viewer.preview', handlePreview);
 
-  context.subscriptions.push(previewCommand, legacyCommand);
+  context.subscriptions.push(previewCommand, aliasCommand, legacyCommand);
 }
 
 export function deactivate() {

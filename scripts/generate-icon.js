@@ -156,3 +156,4 @@ function generateIcon(filePath) {
 }
 
 generateIcon(path.join(__dirname, '../media/icon.png'));
+

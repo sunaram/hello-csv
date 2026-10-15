@@ -31,3 +31,4 @@ All notable changes to the "Hello CSV" extension will be documented in this file
 - **Delimiter Auto-Detection**: Supports comma, semicolon, tab, and pipe.
 - **Export Options**: One-click "Copy as Markdown" and "Copy as TSV".
 - **Theme-Aware**: Adapts automatically to VS Code Dark, Light, and High Contrast themes.
+

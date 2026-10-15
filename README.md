@@ -1,6 +1,6 @@
 # Hello CSV (VS Code Extension)
 
-[![Visual Studio Marketplace](https://img.shields.io/badge/Visual%20Studio%20Marketplace-Hello%20CSV-blue?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=sunaram.hello-csv)
+[![Visual Studio Marketplace](https://img.shields.io/badge/Visual%20Studio%20Marketplace-Hello%20CSV-blue?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=sunaram.hellocsv)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](package.json)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-sunaram%2Fhello--csv-blue?logo=github)](https://github.com/sunaram/hello-csv)
@@ -89,7 +89,7 @@ npx @vscode/vsce login <publisher-name>
 npx @vscode/vsce publish
 ```
 
-*Alternatively, upload the generated `hello-csv-0.2.0.vsix` directly on the [Marketplace Manage Page](https://marketplace.visualstudio.com/manage).*
+*Alternatively, upload the generated `hellocsv-0.2.0.vsix` directly on the [Marketplace Manage Page](https://marketplace.visualstudio.com/manage).*
 
 ---
 

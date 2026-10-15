@@ -1,5 +1,5 @@
 {
-  "name": "hello-csv",
+  "name": "hellocsv",
   "displayName": "Hello CSV",
   "description": "Interactive, theme-aware CSV & TSV tabular viewer and editor for Visual Studio Code.",
   "version": "0.2.0",
@@ -36,12 +36,13 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onCommand:hellocsv.preview",
     "onCommand:hello-csv.preview"
   ],
   "contributes": {
     "commands": [
       {
-        "command": "hello-csv.preview",
+        "command": "hellocsv.preview",
         "title": "Preview with Hello CSV",
         "category": "Hello CSV",
         "icon": "$(table)"
@@ -50,21 +51,21 @@
     "menus": {
       "explorer/context": [
         {
-          "command": "hello-csv.preview",
+          "command": "hellocsv.preview",
           "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceExtname == .txt",
           "group": "navigation@1"
         }
       ],
       "editor/context": [
         {
-          "command": "hello-csv.preview",
+          "command": "hellocsv.preview",
           "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceLangId == 'csv' || resourceLangId == 'tsv'",
           "group": "navigation@1"
         }
       ],
       "editor/title": [
         {
-          "command": "hello-csv.preview",
+          "command": "hellocsv.preview",
           "when": "resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .tab || resourceLangId == 'csv' || resourceLangId == 'tsv'",
           "group": "navigation"
         }
