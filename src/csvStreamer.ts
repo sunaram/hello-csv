@@ -219,10 +219,8 @@ export class CsvStreamIndexer {
     const physicalStartIdx = this.hasHeader ? startRowIdx + 1 : startRowIdx;
     const physicalEndIdx = this.hasHeader ? endRowIdx + 1 : endRowIdx;
 
-    if (physicalStartIdx >= this.rowOffsets.length) {
-      if (!this.indexingDone && this.indexingPromise) {
-        await this.indexingPromise;
-      }
+    if (physicalEndIdx >= this.rowOffsets.length && !this.indexingDone && this.indexingPromise) {
+      await this.indexingPromise;
     }
 
     if (physicalStartIdx >= this.rowOffsets.length) {

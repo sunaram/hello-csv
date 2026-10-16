@@ -896,7 +896,8 @@ export class CsvPreviewPanel {
         <option value="50" selected>50</option>
         <option value="100">100</option>
         <option value="250">250</option>
-        <option value="-1">All</option>
+        <option value="1000">1000</option>
+        <option value="-1">All (max 10,000)</option>
       </select>
 
       <button id="firstPageBtn" class="btn" title="First Page">&laquo;</button>
@@ -940,6 +941,7 @@ export class CsvPreviewPanel {
       let selectedCol = -1;
       let activeEditingTd = null;
       let activeEditingInitialValue = '';
+      const MAX_ALL_PAGE_SIZE = 10000;
 
       // Elements
       const searchInput = document.getElementById('searchInput');
@@ -1085,7 +1087,7 @@ export class CsvPreviewPanel {
         vscode.postMessage({
           type: 'requestPage',
           page,
-          pageSize: pageSize === -1 ? 100 : pageSize,
+          pageSize: pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize,
         });
       }
 
@@ -1222,7 +1224,7 @@ export class CsvPreviewPanel {
           }
 
           const total = searchMatches.length;
-          const effPageSize = pageSize === -1 ? 100 : pageSize;
+          const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
           const start = (currentPage - 1) * effPageSize;
           const end = Math.min(start + effPageSize, total);
 
@@ -1260,8 +1262,8 @@ export class CsvPreviewPanel {
             return;
           }
 
-          const effPageSize = pageSize === -1 ? rows.length : pageSize;
-          const count = pageSize === -1 ? rows.length : Math.min(effPageSize, rows.length);
+          const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
+          const count = pageSize === -1 ? Math.min(MAX_ALL_PAGE_SIZE, rows.length) : Math.min(effPageSize, rows.length);
           const baseIndex = (currentPage - 1) * effPageSize;
 
           for (let i = 0; i < count; i++) {
@@ -1300,8 +1302,9 @@ export class CsvPreviewPanel {
           }
 
           const totalFiltered = filteredRowIndices.length;
-          const start = pageSize === -1 ? 0 : (currentPage - 1) * pageSize;
-          const end = pageSize === -1 ? totalFiltered : Math.min(start + pageSize, totalFiltered);
+          const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
+          const start = (currentPage - 1) * effPageSize;
+          const end = Math.min(start + effPageSize, totalFiltered);
 
           for (let idx = start; idx < end; idx++) {
             const rawRowIndex = filteredRowIndices[idx];
@@ -1828,17 +1831,16 @@ export class CsvPreviewPanel {
 
         let totalRecords = csvData.totalRows;
         let maxPage = 1;
+        const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
 
         if (isStreamMode && isSearching) {
           totalRecords = searchMatches.length;
-          const effPageSize = pageSize === -1 ? 100 : pageSize;
           maxPage = Math.max(1, Math.ceil(totalRecords / effPageSize));
         } else if (isStreamMode) {
-          const effPageSize = pageSize === -1 ? 100 : pageSize;
           maxPage = Math.max(1, Math.ceil(totalRecords / effPageSize));
         } else {
           const totalFiltered = filteredRowIndices.length;
-          maxPage = pageSize === -1 ? 1 : Math.max(1, Math.ceil(totalFiltered / pageSize));
+          maxPage = Math.max(1, Math.ceil(totalFiltered / effPageSize));
         }
 
         if (currentPage > maxPage) currentPage = maxPage;
@@ -1985,7 +1987,7 @@ export class CsvPreviewPanel {
       });
 
       nextPageBtn.addEventListener('click', () => {
-        const effPageSize = pageSize === -1 ? 100 : pageSize;
+        const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
         const total = isStreamMode ? (isSearching ? searchMatches.length : csvData.totalRows) : filteredRowIndices.length;
         const maxPage = Math.max(1, Math.ceil(total / effPageSize));
 
@@ -2002,7 +2004,7 @@ export class CsvPreviewPanel {
       });
 
       lastPageBtn.addEventListener('click', () => {
-        const effPageSize = pageSize === -1 ? 100 : pageSize;
+        const effPageSize = pageSize === -1 ? MAX_ALL_PAGE_SIZE : pageSize;
         const total = isStreamMode ? (isSearching ? searchMatches.length : csvData.totalRows) : filteredRowIndices.length;
         const maxPage = Math.max(1, Math.ceil(total / effPageSize));
 

@@ -2,6 +2,15 @@
 
 All notable changes to the "Hello CSV" extension will be documented in this file.
 
+## [0.3.1] - 2026-10-16
+
+### Improved
+- **Editor Tab Integration**: Previews now open directly in the active editor pane alongside other edit tabs instead of opening beside.
+- **Enhanced "All" Page Size**: Selecting "All" now loads up to 10,000 records (with added `1000` rows option), preventing browser DOM crashes while supporting expansive views.
+- **Default Page Count**: Fixed initial stream preview to strictly display 50 records by default.
+
+---
+
 ## [0.3.0] - 2026-10-16
 
 ### Added & Optimized

@@ -2,7 +2,7 @@
 
 [![Visual Studio Marketplace](https://img.shields.io/badge/Visual%20Studio%20Marketplace-Hello%20CSV-blue?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=sunaram.hellocsv)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.3.1-green.svg)](package.json)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-sunaram%2Fhello--csv-blue?logo=github)](https://github.com/sunaram/hello-csv)
 
 A fast, interactive, and theme-aware **CSV & TSV tabular viewer and in-place editor** for Visual Studio Code.

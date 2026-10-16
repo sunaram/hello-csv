@@ -33,10 +33,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
 
-    // Determine view column: beside active editor if one is open, else active column
-    const viewColumn = vscode.window.activeTextEditor
-      ? vscode.ViewColumn.Beside
-      : vscode.ViewColumn.Active;
+    // Open preview in the active editor pane alongside other tabs
+    const viewColumn = vscode.ViewColumn.Active;
 
     // Create or show the preview panel
     CsvPreviewPanel.createOrShow(targetUri, viewColumn);

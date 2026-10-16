@@ -2,7 +2,7 @@
   "name": "hellocsv",
   "displayName": "Hello CSV - Tabular Viewer & Editor",
   "description": "Interactive, theme-aware CSV & TSV tabular viewer and editor for Visual Studio Code.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "sunaram",
   "icon": "media/icon.png",
   "license": "MIT",
