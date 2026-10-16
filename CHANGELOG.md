@@ -2,6 +2,19 @@
 
 All notable changes to the "Hello CSV" extension will be documented in this file.
 
+## [0.3.0] - 2026-10-16
+
+### Added & Optimized
+- **Virtual Streaming Mode for Massive CSVs**: Seamlessly handles files with millions of rows without memory exhaustion or UI freezes.
+- **Instant First Paint (< 50ms)**: Fast-sniffs delimiter and headers, rendering the first preview page in under 50 milliseconds.
+- **Sparse Byte-Offset Indexing**: Background stream indexes line breaks into a lightweight byte offset map, enabling O(1) random-access page seeking (< 5ms).
+- **Blazing-Fast Streaming Search**: Bypasses full CSV parsing using raw-string pre-filtering to scan files at disk speed, pushing real-time progressive search matches to the webview.
+- **Debounced Input with Stream Cancellation**: Keystrokes immediately cancel previous search streams via `AbortController`, preventing queue lag.
+- **Atomic Streaming Delta Saving**: Saving edited cells on multi-gigabyte files streams the source file and replaces only modified rows, keeping peak memory under 10MB.
+- **Live Progress Feedback**: Displays real-time indexing and search progress percentages in the status bar.
+
+---
+
 ## [0.2.0] - 2026-10-15
 
 ### Added

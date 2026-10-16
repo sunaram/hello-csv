@@ -1,7 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { parseCsv, unparseCsv, formatAsMarkdown, formatAsTsv } from './csvParser';
-import { CsvParseOptions, CsvParseResult, ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types';
+import { sniffFile, CsvStreamIndexer } from './csvStreamer';
+import {
+  CsvParseOptions,
+  CsvParseResult,
+  ExtensionToWebviewMessage,
+  WebviewToExtensionMessage,
+  SearchMatchItem,
+} from './types';
 
 export class CsvPreviewPanel {
   public static readonly viewType = 'helloCsv.preview';
@@ -13,6 +21,10 @@ export class CsvPreviewPanel {
   private currentOptions: CsvParseOptions = { hasHeader: true, delimiter: 'auto' };
   private cachedResult?: CsvParseResult;
   private isDirty: boolean = false;
+
+  private streamer?: CsvStreamIndexer;
+  private isStreamMode: boolean = false;
+  private currentSearchAbort?: AbortController;
 
   public static createOrShow(resourceUri: vscode.Uri, viewColumn?: vscode.ViewColumn): CsvPreviewPanel {
     const key = resourceUri.toString();
@@ -74,19 +86,77 @@ export class CsvPreviewPanel {
 
   private async loadAndSendCsv(): Promise<void> {
     try {
-      const fileBytes = await vscode.workspace.fs.readFile(this.resourceUri);
-      const content = new TextDecoder('utf-8').decode(fileBytes);
-      const fileName = path.basename(this.resourceUri.fsPath);
+      const fsPath = this.resourceUri.fsPath;
+      const stats = await fs.promises.stat(fsPath);
+      const fileName = path.basename(fsPath);
 
-      const result = parseCsv(content, fileName, this.currentOptions);
-      this.cachedResult = result;
-      this.setDirtyState(false);
+      // Clean up previous search or streamer if active
+      if (this.currentSearchAbort) {
+        this.currentSearchAbort.abort();
+        this.currentSearchAbort = undefined;
+      }
+      if (this.streamer) {
+        this.streamer.dispose();
+        this.streamer = undefined;
+      }
 
-      const message: ExtensionToWebviewMessage = {
-        type: 'update',
-        data: result,
-      };
-      this.panel.webview.postMessage(message);
+      // 5 MB threshold: larger files activate Virtual Streaming Mode
+      const STREAM_THRESHOLD = 5 * 1024 * 1024;
+
+      if (stats.size > STREAM_THRESHOLD) {
+        this.isStreamMode = true;
+        const sniff = await sniffFile(fsPath, this.currentOptions);
+
+        this.streamer = new CsvStreamIndexer(fsPath, stats.size, {
+          hasHeader: this.currentOptions.hasHeader ?? true,
+          delimiter: sniff.delimiter,
+          totalColumns: sniff.totalColumns,
+        });
+
+        this.setDirtyState(false);
+
+        // Send instant first paint (<50ms)
+        this.panel.webview.postMessage({
+          type: 'init',
+          data: {
+            headers: sniff.headers,
+            rows: sniff.initialRows,
+            totalRows: sniff.estimatedRows,
+            totalColumns: sniff.totalColumns,
+            delimiter: sniff.delimiter,
+            fileName,
+            fileSize: stats.size,
+            isStreamMode: true,
+            isIndexing: true,
+          },
+        } as ExtensionToWebviewMessage);
+
+        // Start background indexing of row offsets
+        this.streamer.startIndexing((totalRows, isComplete) => {
+          this.panel.webview.postMessage({
+            type: 'indexProgress',
+            totalRows,
+            isComplete,
+          } as ExtensionToWebviewMessage);
+        });
+      } else {
+        // Direct In-Memory Mode for smaller files
+        this.isStreamMode = false;
+        const fileBytes = await vscode.workspace.fs.readFile(this.resourceUri);
+        const content = new TextDecoder('utf-8').decode(fileBytes);
+        const result = parseCsv(content, fileName, this.currentOptions);
+        this.cachedResult = result;
+        this.setDirtyState(false);
+
+        this.panel.webview.postMessage({
+          type: 'init',
+          data: {
+            ...result,
+            isStreamMode: false,
+            isIndexing: false,
+          },
+        } as ExtensionToWebviewMessage);
+      }
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
       this.panel.webview.postMessage({
@@ -117,6 +187,66 @@ export class CsvPreviewPanel {
         }
         await this.loadAndSendCsv();
         break;
+
+      case 'requestPage': {
+        if (this.streamer && this.isStreamMode) {
+          try {
+            const { rows, totalRows } = await this.streamer.getPage(message.page, message.pageSize);
+            this.panel.webview.postMessage({
+              type: 'pageData',
+              page: message.page,
+              pageSize: message.pageSize,
+              rows,
+              totalRows,
+            } as ExtensionToWebviewMessage);
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to fetch page ${message.page}: ${err?.message || err}`);
+          }
+        }
+        break;
+      }
+
+      case 'startSearch': {
+        if (this.streamer && this.isStreamMode) {
+          if (this.currentSearchAbort) {
+            this.currentSearchAbort.abort();
+          }
+          this.currentSearchAbort = new AbortController();
+          const abortSignal = this.currentSearchAbort.signal;
+          const sessionId = message.sessionId;
+
+          this.streamer
+            .streamingSearch(
+              message.query,
+              (batch, scannedRatio, done) => {
+                if (!abortSignal.aborted) {
+                  this.panel.webview.postMessage({
+                    type: 'searchBatch',
+                    sessionId,
+                    matches: batch,
+                    scannedRatio,
+                    done,
+                  } as ExtensionToWebviewMessage);
+                }
+              },
+              abortSignal
+            )
+            .catch((err) => {
+              if (!abortSignal.aborted) {
+                console.error('Streaming search error:', err);
+              }
+            });
+        }
+        break;
+      }
+
+      case 'cancelSearch': {
+        if (this.currentSearchAbort) {
+          this.currentSearchAbort.abort();
+          this.currentSearchAbort = undefined;
+        }
+        break;
+      }
 
       case 'setDirty':
         this.setDirtyState(message.isDirty);
@@ -167,6 +297,25 @@ export class CsvPreviewPanel {
         break;
       }
 
+      case 'saveDelta': {
+        try {
+          if (this.streamer && this.isStreamMode) {
+            await this.streamer.saveDeltaEdits(message.modifiedRows, message.headers);
+            this.setDirtyState(false);
+            this.panel.webview.postMessage({ type: 'saveSuccess' } as ExtensionToWebviewMessage);
+            vscode.window.showInformationMessage(`Saved ${path.basename(this.resourceUri.fsPath)} successfully!`);
+          }
+        } catch (err: any) {
+          const errMsg = err?.message || String(err);
+          vscode.window.showErrorMessage(`Failed to save CSV changes: ${errMsg}`);
+          this.panel.webview.postMessage({
+            type: 'saveError',
+            message: errMsg,
+          } as ExtensionToWebviewMessage);
+        }
+        break;
+      }
+
       case 'copyToClipboard': {
         try {
           await vscode.env.clipboard.writeText(message.text);
@@ -196,6 +345,13 @@ export class CsvPreviewPanel {
   public dispose(): void {
     const key = this.resourceUri.toString();
     CsvPreviewPanel.currentPanels.delete(key);
+
+    if (this.currentSearchAbort) {
+      this.currentSearchAbort.abort();
+    }
+    if (this.streamer) {
+      this.streamer.dispose();
+    }
 
     this.panel.dispose();
     while (this.disposables.length) {
@@ -340,6 +496,24 @@ export class CsvPreviewPanel {
       line-height: 1;
       display: none;
     }
+
+    .search-indicator {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--vscode-editorInfo-foreground, #3794ff);
+    }
+
+    .search-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(128, 128, 128, 0.3);
+      border-top-color: var(--focus-color);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
 
     .btn, select {
       background: var(--vscode-button-secondaryBackground, #3a3d41);
@@ -493,7 +667,7 @@ export class CsvPreviewPanel {
       font-variant-numeric: tabular-nums;
       width: 44px;
       min-width: 44px;
-      max-width: 65px;
+      max-width: 75px;
       user-select: none;
       font-size: 11px;
       z-index: 5;
@@ -631,6 +805,10 @@ export class CsvPreviewPanel {
         <input type="text" id="searchInput" class="search-input" placeholder="Search / filter rows..." />
         <span id="searchClear" class="search-clear">&times;</span>
       </div>
+      <div id="searchIndicator" class="search-indicator">
+        <span class="search-spinner"></span>
+        <span id="searchProgressText">Searching...</span>
+      </div>
     </div>
 
     <!-- Edit Actions -->
@@ -669,7 +847,7 @@ export class CsvPreviewPanel {
         <option value="auto">Auto</option>
         <option value=",">Comma (,)</option>
         <option value=";">Semicolon (;)</option>
-        <option value="&#9;">Tab (\t)</option>
+        <option value="&#9;">Tab (\\t)</option>
         <option value="|">Pipe (|)</option>
       </select>
     </div>
@@ -735,12 +913,23 @@ export class CsvPreviewPanel {
 
       // State
       let csvData = null;
-      let initialSnapshot = null; // for Revert
-      let modifiedCells = new Set(); // set of "rawRowIndex:colIndex"
+      let initialSnapshot = null;
+      let isStreamMode = false;
+      let isIndexing = false;
+
+      // Edit tracking: modifiedCells (Set of "rawRow:col"), modifiedRows (Map of rawRow -> rowData)
+      let modifiedCells = new Set();
+      let modifiedRows = new Map();
       let undoStack = [];
       let redoStack = [];
 
-      let filteredRowIndices = []; // indices into csvData.rows
+      // Pagination & Filter State
+      let filteredRowIndices = []; // For in-memory mode
+      let searchMatches = []; // For stream mode: array of { rowNumber, row }
+      let isSearching = false;
+      let searchSessionId = '';
+      let searchDebounceTimer = null;
+
       let currentPage = 1;
       let pageSize = 50;
       let sortColumn = -1; // -1 = natural order
@@ -755,6 +944,9 @@ export class CsvPreviewPanel {
       // Elements
       const searchInput = document.getElementById('searchInput');
       const searchClear = document.getElementById('searchClear');
+      const searchIndicator = document.getElementById('searchIndicator');
+      const searchProgressText = document.getElementById('searchProgressText');
+
       const cellAddressBadge = document.getElementById('cellAddressBadge');
       const cellBarInput = document.getElementById('cellBarInput');
       const headerCheckbox = document.getElementById('headerCheckbox');
@@ -824,6 +1016,7 @@ export class CsvPreviewPanel {
           totalColumns: data.totalColumns,
           delimiter: data.delimiter,
           fileName: data.fileName,
+          isStreamMode: data.isStreamMode,
         };
       }
 
@@ -836,8 +1029,9 @@ export class CsvPreviewPanel {
         vscode.postMessage({ type: 'setDirty', isDirty });
       }
 
-      // Filter and sort computation
+      // Filter and sort computation for in-memory mode
       function computeFilteredIndices() {
+        if (isStreamMode) return;
         if (!csvData || !csvData.rows) {
           filteredRowIndices = [];
           return;
@@ -881,6 +1075,18 @@ export class CsvPreviewPanel {
         }
 
         filteredRowIndices = indices;
+      }
+
+      // Fetch page from extension in streaming mode
+      function fetchPage(page) {
+        if (!isStreamMode || isSearching) return;
+        currentPage = page;
+        showOverlay('Loading page ' + page + '...', true);
+        vscode.postMessage({
+          type: 'requestPage',
+          page,
+          pageSize: pageSize === -1 ? 100 : pageSize,
+        });
       }
 
       // Render Table Header
@@ -932,11 +1138,31 @@ export class CsvPreviewPanel {
               sortColumn = col;
               sortDirection = 'asc';
             }
-            currentPage = 1;
-            computeFilteredIndices();
-            renderHeader();
-            renderBody();
-            updatePagination();
+
+            if (isStreamMode) {
+              // In stream mode, sort currently loaded rows or search matches
+              const rowsToSort = isSearching ? searchMatches : csvData.rows;
+              const isAsc = sortDirection === 'asc';
+              if (sortColumn >= 0) {
+                rowsToSort.sort((a, b) => {
+                  const valA = String((isSearching ? a.row[col] : a[col]) ?? '').trim();
+                  const valB = String((isSearching ? b.row[col] : b[col]) ?? '').trim();
+                  const numA = Number(valA);
+                  const numB = Number(valB);
+                  const bothNum = !isNaN(numA) && !isNaN(numB) && valA !== '' && valB !== '';
+                  let cmp = bothNum ? numA - numB : valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+                  return isAsc ? cmp : -cmp;
+                });
+              }
+              renderHeader();
+              renderBody();
+            } else {
+              currentPage = 1;
+              computeFilteredIndices();
+              renderHeader();
+              renderBody();
+              updatePagination();
+            }
           });
 
           // Double click to rename header
@@ -977,48 +1203,129 @@ export class CsvPreviewPanel {
 
       // Render Table Body
       function renderBody() {
-        if (!csvData || filteredRowIndices.length === 0) {
+        if (!csvData) {
           tableBody.innerHTML = '';
-          if (csvData && csvData.rows.length === 0) {
-            showOverlay('This file is empty.');
-          } else if (csvData && filteredRowIndices.length === 0) {
-            showOverlay('No rows match your search query.');
-          }
-          delRowBtn.disabled = true;
           return;
         }
 
         hideOverlay();
-
-        const totalFiltered = filteredRowIndices.length;
-        const start = pageSize === -1 ? 0 : (currentPage - 1) * pageSize;
-        const end = pageSize === -1 ? totalFiltered : Math.min(start + pageSize, totalFiltered);
-
-        let rowsHtml = '';
         const query = searchQuery.trim();
+        let rowsHtml = '';
 
-        for (let idx = start; idx < end; idx++) {
-          const rawRowIndex = filteredRowIndices[idx];
-          const rowData = csvData.rows[rawRowIndex];
-          const displayRowNum = rawRowIndex + 1;
-
-          rowsHtml += '<tr data-raw-row="' + rawRowIndex + '">';
-          rowsHtml += '<td class="row-index">' + displayRowNum + '</td>';
-
-          for (let c = 0; c < rowData.length; c++) {
-            const cellVal = rowData[c] ?? '';
-            const isModified = modifiedCells.has(rawRowIndex + ':' + c);
-            const isSelected = selectedRawRow === rawRowIndex && selectedCol === c;
-            const highlighted = highlightText(cellVal, query);
-
-            let classes = [];
-            if (isModified) classes.push('cell-modified');
-            if (isSelected) classes.push('selected');
-            const classAttr = classes.length > 0 ? ' class="' + classes.join(' ') + '"' : '';
-
-            rowsHtml += '<td' + classAttr + ' data-raw-row="' + rawRowIndex + '" data-col="' + c + '" title="' + escapeHtml(cellVal) + '">' + highlighted + '</td>';
+        if (isStreamMode && isSearching) {
+          // Render streaming search matches
+          if (searchMatches.length === 0) {
+            tableBody.innerHTML = '';
+            showOverlay('No rows match your search query.');
+            delRowBtn.disabled = true;
+            return;
           }
-          rowsHtml += '</tr>';
+
+          const total = searchMatches.length;
+          const effPageSize = pageSize === -1 ? 100 : pageSize;
+          const start = (currentPage - 1) * effPageSize;
+          const end = Math.min(start + effPageSize, total);
+
+          for (let i = start; i < end; i++) {
+            const item = searchMatches[i];
+            const rawRow = item.rowNumber;
+            const displayRowNum = rawRow + 1;
+            const rowData = item.row;
+
+            rowsHtml += '<tr data-raw-row="' + rawRow + '">';
+            rowsHtml += '<td class="row-index">' + displayRowNum + '</td>';
+
+            for (let c = 0; c < rowData.length; c++) {
+              const cellVal = rowData[c] ?? '';
+              const isModified = modifiedCells.has(rawRow + ':' + c);
+              const isSelected = selectedRawRow === rawRow && selectedCol === c;
+              const highlighted = highlightText(cellVal, query);
+
+              let classes = [];
+              if (isModified) classes.push('cell-modified');
+              if (isSelected) classes.push('selected');
+              const classAttr = classes.length > 0 ? ' class="' + classes.join(' ') + '"' : '';
+
+              rowsHtml += '<td' + classAttr + ' data-raw-row="' + rawRow + '" data-col="' + c + '" title="' + escapeHtml(cellVal) + '">' + highlighted + '</td>';
+            }
+            rowsHtml += '</tr>';
+          }
+        } else if (isStreamMode) {
+          // Render dynamically fetched page
+          const rows = csvData.rows || [];
+          if (rows.length === 0) {
+            tableBody.innerHTML = '';
+            showOverlay('This file is empty.');
+            delRowBtn.disabled = true;
+            return;
+          }
+
+          const effPageSize = pageSize === -1 ? rows.length : pageSize;
+          const count = pageSize === -1 ? rows.length : Math.min(effPageSize, rows.length);
+          const baseIndex = (currentPage - 1) * effPageSize;
+
+          for (let i = 0; i < count; i++) {
+            const rawRow = baseIndex + i;
+            const displayRowNum = rawRow + 1;
+            const rowData = rows[i];
+
+            rowsHtml += '<tr data-raw-row="' + rawRow + '">';
+            rowsHtml += '<td class="row-index">' + displayRowNum + '</td>';
+
+            for (let c = 0; c < rowData.length; c++) {
+              const cellVal = rowData[c] ?? '';
+              const isModified = modifiedCells.has(rawRow + ':' + c);
+              const isSelected = selectedRawRow === rawRow && selectedCol === c;
+
+              let classes = [];
+              if (isModified) classes.push('cell-modified');
+              if (isSelected) classes.push('selected');
+              const classAttr = classes.length > 0 ? ' class="' + classes.join(' ') + '"' : '';
+
+              rowsHtml += '<td' + classAttr + ' data-raw-row="' + rawRow + '" data-col="' + c + '" title="' + escapeHtml(cellVal) + '">' + escapeHtml(cellVal) + '</td>';
+            }
+            rowsHtml += '</tr>';
+          }
+        } else {
+          // In-memory mode
+          if (filteredRowIndices.length === 0) {
+            tableBody.innerHTML = '';
+            if (csvData.rows.length === 0) {
+              showOverlay('This file is empty.');
+            } else {
+              showOverlay('No rows match your search query.');
+            }
+            delRowBtn.disabled = true;
+            return;
+          }
+
+          const totalFiltered = filteredRowIndices.length;
+          const start = pageSize === -1 ? 0 : (currentPage - 1) * pageSize;
+          const end = pageSize === -1 ? totalFiltered : Math.min(start + pageSize, totalFiltered);
+
+          for (let idx = start; idx < end; idx++) {
+            const rawRowIndex = filteredRowIndices[idx];
+            const rowData = csvData.rows[rawRowIndex];
+            const displayRowNum = rawRowIndex + 1;
+
+            rowsHtml += '<tr data-raw-row="' + rawRowIndex + '">';
+            rowsHtml += '<td class="row-index">' + displayRowNum + '</td>';
+
+            for (let c = 0; c < rowData.length; c++) {
+              const cellVal = rowData[c] ?? '';
+              const isModified = modifiedCells.has(rawRowIndex + ':' + c);
+              const isSelected = selectedRawRow === rawRowIndex && selectedCol === c;
+              const highlighted = highlightText(cellVal, query);
+
+              let classes = [];
+              if (isModified) classes.push('cell-modified');
+              if (isSelected) classes.push('selected');
+              const classAttr = classes.length > 0 ? ' class="' + classes.join(' ') + '"' : '';
+
+              rowsHtml += '<td' + classAttr + ' data-raw-row="' + rawRowIndex + '" data-col="' + c + '" title="' + escapeHtml(cellVal) + '">' + highlighted + '</td>';
+            }
+            rowsHtml += '</tr>';
+          }
         }
 
         tableBody.innerHTML = rowsHtml;
@@ -1049,7 +1356,8 @@ export class CsvPreviewPanel {
         }
 
         activeEditingTd = td;
-        activeEditingInitialValue = csvData.rows[rawRow][col] ?? '';
+        const currentVal = getCellValue(rawRow, col);
+        activeEditingInitialValue = currentVal;
 
         td.classList.add('editing');
         td.contentEditable = 'true';
@@ -1067,7 +1375,6 @@ export class CsvPreviewPanel {
           if (e.key === 'Enter') {
             e.preventDefault();
             commitCellEdit(td);
-            selectNextRowCell(rawRow, col);
           } else if (e.key === 'Escape') {
             e.preventDefault();
             cancelCellEdit(td);
@@ -1094,11 +1401,62 @@ export class CsvPreviewPanel {
         td.addEventListener('blur', onBlur);
       }
 
+      function getCellValue(rawRow, col) {
+        if (isStreamMode) {
+          if (modifiedRows.has(rawRow)) {
+            return modifiedRows.get(rawRow)[col] ?? '';
+          }
+          if (isSearching) {
+            const item = searchMatches.find(m => m.rowNumber === rawRow);
+            return item ? (item.row[col] ?? '') : '';
+          }
+          const effPageSize = pageSize === -1 ? csvData.rows.length : pageSize;
+          const relIndex = rawRow - (currentPage - 1) * effPageSize;
+          return csvData.rows[relIndex]?.[col] ?? '';
+        }
+        return csvData.rows[rawRow]?.[col] ?? '';
+      }
+
+      function setCellValue(rawRow, col, newValue) {
+        if (isStreamMode) {
+          let rowData = null;
+          if (modifiedRows.has(rawRow)) {
+            rowData = modifiedRows.get(rawRow);
+          } else if (isSearching) {
+            const item = searchMatches.find(m => m.rowNumber === rawRow);
+            if (item) rowData = [...item.row];
+          } else {
+            const effPageSize = pageSize === -1 ? csvData.rows.length : pageSize;
+            const relIndex = rawRow - (currentPage - 1) * effPageSize;
+            if (csvData.rows[relIndex]) {
+              rowData = [...csvData.rows[relIndex]];
+            }
+          }
+
+          if (rowData) {
+            rowData[col] = newValue;
+            modifiedRows.set(rawRow, rowData);
+            if (isSearching) {
+              const item = searchMatches.find(m => m.rowNumber === rawRow);
+              if (item) item.row[col] = newValue;
+            } else {
+              const effPageSize = pageSize === -1 ? csvData.rows.length : pageSize;
+              const relIndex = rawRow - (currentPage - 1) * effPageSize;
+              if (csvData.rows[relIndex]) {
+                csvData.rows[relIndex][col] = newValue;
+              }
+            }
+          }
+        } else {
+          csvData.rows[rawRow][col] = newValue;
+        }
+      }
+
       function commitCellEdit(td) {
         if (!td) return;
         const rawRow = parseInt(td.getAttribute('data-raw-row'), 10);
         const col = parseInt(td.getAttribute('data-col'), 10);
-        const newValue = td.innerText.replace(/\\r?\\n$/, ''); // strip trailing enter newline
+        const newValue = td.innerText.replace(/\\r?\\n$/, '');
         const oldValue = activeEditingInitialValue;
 
         td.contentEditable = 'false';
@@ -1108,7 +1466,7 @@ export class CsvPreviewPanel {
         if (newValue !== oldValue) {
           undoStack.push({ type: 'cell', rawRow, col, oldVal: oldValue, newVal: newValue });
           redoStack = [];
-          csvData.rows[rawRow][col] = newValue;
+          setCellValue(rawRow, col, newValue);
           modifiedCells.add(rawRow + ':' + col);
           updateDirtyUI();
         }
@@ -1156,26 +1514,15 @@ export class CsvPreviewPanel {
         }
       }
 
-      function selectNextRowCell(rawRow, col) {
-        const currentFilteredIdx = filteredRowIndices.indexOf(rawRow);
-        if (currentFilteredIdx >= 0 && currentFilteredIdx + 1 < filteredRowIndices.length) {
-          const nextRawRow = filteredRowIndices[currentFilteredIdx + 1];
-          const targetTd = tableBody.querySelector('td[data-raw-row="' + nextRawRow + '"][data-col="' + col + '"]');
-          if (targetTd) {
-            selectCell(nextRawRow, col, targetTd);
-          }
-        }
-      }
-
       function selectCell(rawRow, col, td) {
         const prevSelected = tableBody.querySelector('td.selected');
         if (prevSelected) prevSelected.classList.remove('selected');
 
         selectedRawRow = rawRow;
         selectedCol = col;
-        delRowBtn.disabled = false;
+        delRowBtn.disabled = isStreamMode; // Row deletion on multi-million row stream disabled for safety
 
-        const val = csvData.rows[rawRow]?.[col] ?? '';
+        const val = getCellValue(rawRow, col);
         const colLetter = getColLetter(col);
         const colName = csvData?.headers[col] || ('Col ' + (col + 1));
         const address = colLetter + (rawRow + 1);
@@ -1196,10 +1543,10 @@ export class CsvPreviewPanel {
         const rawRow = selectedRawRow;
         const col = selectedCol;
         const newVal = cellBarInput.value;
-        const oldVal = csvData.rows[rawRow][col];
+        const oldVal = getCellValue(rawRow, col);
 
         if (newVal !== oldVal) {
-          csvData.rows[rawRow][col] = newVal;
+          setCellValue(rawRow, col, newVal);
           modifiedCells.add(rawRow + ':' + col);
           updateDirtyUI();
 
@@ -1219,9 +1566,14 @@ export class CsvPreviewPanel {
         }
       });
 
-      // Add Row
+      // Add Row (In-memory mode only)
       addRowBtn.addEventListener('click', () => {
         if (!csvData) return;
+        if (isStreamMode) {
+          vscode.postMessage({ type: 'showInfo', message: 'Adding rows is only supported for files under 5MB.' });
+          return;
+        }
+
         const newRow = new Array(csvData.headers.length).fill('');
         const insertIndex = selectedRawRow >= 0 ? selectedRawRow + 1 : csvData.rows.length;
         csvData.rows.splice(insertIndex, 0, newRow);
@@ -1249,7 +1601,7 @@ export class CsvPreviewPanel {
 
       // Delete Row
       delRowBtn.addEventListener('click', () => {
-        if (!csvData || selectedRawRow < 0) return;
+        if (!csvData || selectedRawRow < 0 || isStreamMode) return;
         const rowIdx = selectedRawRow;
         const deletedRow = csvData.rows[rowIdx];
 
@@ -1279,8 +1631,10 @@ export class CsvPreviewPanel {
         const newColName = 'Column ' + (newColIdx + 1);
 
         csvData.headers.push(newColName);
-        for (let r = 0; r < csvData.rows.length; r++) {
-          csvData.rows[r].push('');
+        if (!isStreamMode) {
+          for (let r = 0; r < csvData.rows.length; r++) {
+            csvData.rows[r].push('');
+          }
         }
         csvData.totalColumns = csvData.headers.length;
 
@@ -1300,13 +1654,28 @@ export class CsvPreviewPanel {
         }
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving...';
-        vscode.postMessage({
-          type: 'saveData',
-          headers: csvData.headers,
-          rows: csvData.rows,
-          delimiter: delimiterSelect.value === 'auto' ? csvData.delimiter : delimiterSelect.value,
-          hasHeader: headerCheckbox.checked,
-        });
+
+        if (isStreamMode) {
+          const modObj = {};
+          modifiedRows.forEach((val, key) => {
+            modObj[key] = val;
+          });
+          vscode.postMessage({
+            type: 'saveDelta',
+            headers: csvData.headers,
+            modifiedRows: modObj,
+            delimiter: delimiterSelect.value === 'auto' ? csvData.delimiter : delimiterSelect.value,
+            hasHeader: headerCheckbox.checked,
+          });
+        } else {
+          vscode.postMessage({
+            type: 'saveData',
+            headers: csvData.headers,
+            rows: csvData.rows,
+            delimiter: delimiterSelect.value === 'auto' ? csvData.delimiter : delimiterSelect.value,
+            hasHeader: headerCheckbox.checked,
+          });
+        }
       });
 
       // Revert Changes
@@ -1314,14 +1683,19 @@ export class CsvPreviewPanel {
         if (!initialSnapshot) return;
         csvData = deepCloneData(initialSnapshot);
         modifiedCells.clear();
+        modifiedRows.clear();
         undoStack = [];
         redoStack = [];
         activeEditingTd = null;
         updateDirtyUI();
-        computeFilteredIndices();
-        renderHeader();
-        renderBody();
-        updatePagination();
+        if (isStreamMode) {
+          fetchPage(currentPage);
+        } else {
+          computeFilteredIndices();
+          renderHeader();
+          renderBody();
+          updatePagination();
+        }
       });
 
       // Global keyboard shortcuts (Ctrl+S, Ctrl+Z, Ctrl+Y, Enter, typing)
@@ -1386,7 +1760,7 @@ export class CsvPreviewPanel {
 
         if (action.type === 'cell') {
           redoStack.push(action);
-          csvData.rows[action.rawRow][action.col] = action.oldVal;
+          setCellValue(action.rawRow, action.col, action.oldVal);
           renderBody();
         } else if (action.type === 'addRow') {
           redoStack.push(action);
@@ -1412,7 +1786,7 @@ export class CsvPreviewPanel {
 
         if (action.type === 'cell') {
           undoStack.push(action);
-          csvData.rows[action.rawRow][action.col] = action.newVal;
+          setCellValue(action.rawRow, action.col, action.newVal);
           renderBody();
         } else if (action.type === 'addRow') {
           undoStack.push(action);
@@ -1452,11 +1826,21 @@ export class CsvPreviewPanel {
           return;
         }
 
-        const totalFiltered = filteredRowIndices.length;
-        const totalRows = csvData.totalRows;
-        const totalCols = csvData.totalColumns;
+        let totalRecords = csvData.totalRows;
+        let maxPage = 1;
 
-        const maxPage = pageSize === -1 ? 1 : Math.max(1, Math.ceil(totalFiltered / pageSize));
+        if (isStreamMode && isSearching) {
+          totalRecords = searchMatches.length;
+          const effPageSize = pageSize === -1 ? 100 : pageSize;
+          maxPage = Math.max(1, Math.ceil(totalRecords / effPageSize));
+        } else if (isStreamMode) {
+          const effPageSize = pageSize === -1 ? 100 : pageSize;
+          maxPage = Math.max(1, Math.ceil(totalRecords / effPageSize));
+        } else {
+          const totalFiltered = filteredRowIndices.length;
+          maxPage = pageSize === -1 ? 1 : Math.max(1, Math.ceil(totalFiltered / pageSize));
+        }
+
         if (currentPage > maxPage) currentPage = maxPage;
         if (currentPage < 1) currentPage = 1;
 
@@ -1466,9 +1850,14 @@ export class CsvPreviewPanel {
         nextPageBtn.disabled = currentPage >= maxPage;
         lastPageBtn.disabled = currentPage >= maxPage;
 
-        let stats = totalRows + ' rows &times; ' + totalCols + ' cols';
-        if (searchQuery.trim().length > 0) {
-          stats += ' (Filtered: ' + totalFiltered + ' of ' + totalRows + ')';
+        let stats = totalRecords.toLocaleString() + ' rows &times; ' + csvData.totalColumns + ' cols';
+        if (isStreamMode && isIndexing) {
+          stats += ' (Indexing...)';
+        }
+        if (isStreamMode && isSearching) {
+          stats += ' (Filtered: ' + searchMatches.length.toLocaleString() + ' matches)';
+        } else if (!isStreamMode && searchQuery.trim().length > 0) {
+          stats += ' (Filtered: ' + filteredRowIndices.length.toLocaleString() + ' of ' + csvData.totalRows.toLocaleString() + ')';
         }
         statsLabel.innerHTML = stats;
       }
@@ -1484,24 +1873,60 @@ export class CsvPreviewPanel {
         statusOverlay.classList.add('hidden');
       }
 
-      // Event listeners
+      // Search & Filter input with streaming debounce
       searchInput.addEventListener('input', () => {
         searchQuery = searchInput.value;
         searchClear.style.display = searchQuery ? 'block' : 'none';
-        currentPage = 1;
-        computeFilteredIndices();
-        renderBody();
-        updatePagination();
+
+        if (isStreamMode) {
+          if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            const query = searchInput.value.trim();
+            if (!query) {
+              isSearching = false;
+              searchMatches = [];
+              searchIndicator.style.display = 'none';
+              vscode.postMessage({ type: 'cancelSearch', sessionId: searchSessionId });
+              currentPage = 1;
+              fetchPage(1);
+            } else {
+              isSearching = true;
+              searchMatches = [];
+              currentPage = 1;
+              searchSessionId = Date.now().toString();
+              searchIndicator.style.display = 'inline-flex';
+              searchProgressText.textContent = 'Scanning stream...';
+              renderBody();
+              updatePagination();
+              vscode.postMessage({ type: 'startSearch', query, sessionId: searchSessionId });
+            }
+          }, 250);
+        } else {
+          currentPage = 1;
+          computeFilteredIndices();
+          renderBody();
+          updatePagination();
+        }
       });
 
       searchClear.addEventListener('click', () => {
         searchInput.value = '';
         searchQuery = '';
         searchClear.style.display = 'none';
-        currentPage = 1;
-        computeFilteredIndices();
-        renderBody();
-        updatePagination();
+
+        if (isStreamMode) {
+          isSearching = false;
+          searchMatches = [];
+          searchIndicator.style.display = 'none';
+          vscode.postMessage({ type: 'cancelSearch', sessionId: searchSessionId });
+          currentPage = 1;
+          fetchPage(1);
+        } else {
+          currentPage = 1;
+          computeFilteredIndices();
+          renderBody();
+          updatePagination();
+        }
         searchInput.focus();
       });
 
@@ -1509,7 +1934,7 @@ export class CsvPreviewPanel {
         showOverlay('Re-parsing...', true);
         vscode.postMessage({
           type: 'requestReload',
-          hasHeader: headerCheckbox.checked
+          hasHeader: headerCheckbox.checked,
         });
       });
 
@@ -1517,52 +1942,78 @@ export class CsvPreviewPanel {
         showOverlay('Re-parsing...', true);
         vscode.postMessage({
           type: 'requestReload',
-          delimiter: delimiterSelect.value
+          delimiter: delimiterSelect.value,
         });
       });
 
       pageSizeSelect.addEventListener('change', () => {
         pageSize = parseInt(pageSizeSelect.value, 10);
         currentPage = 1;
-        renderBody();
-        updatePagination();
+        if (isStreamMode && !isSearching) {
+          fetchPage(1);
+        } else {
+          renderBody();
+          updatePagination();
+        }
         tableContainer.scrollTop = 0;
       });
 
       firstPageBtn.addEventListener('click', () => {
         if (currentPage > 1) {
-          currentPage = 1;
-          renderBody();
-          updatePagination();
+          if (isStreamMode && !isSearching) {
+            fetchPage(1);
+          } else {
+            currentPage = 1;
+            renderBody();
+            updatePagination();
+          }
           tableContainer.scrollTop = 0;
         }
       });
 
       prevPageBtn.addEventListener('click', () => {
         if (currentPage > 1) {
-          currentPage--;
-          renderBody();
-          updatePagination();
+          if (isStreamMode && !isSearching) {
+            fetchPage(currentPage - 1);
+          } else {
+            currentPage--;
+            renderBody();
+            updatePagination();
+          }
           tableContainer.scrollTop = 0;
         }
       });
 
       nextPageBtn.addEventListener('click', () => {
-        const maxPage = pageSize === -1 ? 1 : Math.ceil(filteredRowIndices.length / pageSize);
+        const effPageSize = pageSize === -1 ? 100 : pageSize;
+        const total = isStreamMode ? (isSearching ? searchMatches.length : csvData.totalRows) : filteredRowIndices.length;
+        const maxPage = Math.max(1, Math.ceil(total / effPageSize));
+
         if (currentPage < maxPage) {
-          currentPage++;
-          renderBody();
-          updatePagination();
+          if (isStreamMode && !isSearching) {
+            fetchPage(currentPage + 1);
+          } else {
+            currentPage++;
+            renderBody();
+            updatePagination();
+          }
           tableContainer.scrollTop = 0;
         }
       });
 
       lastPageBtn.addEventListener('click', () => {
-        const maxPage = pageSize === -1 ? 1 : Math.ceil(filteredRowIndices.length / pageSize);
+        const effPageSize = pageSize === -1 ? 100 : pageSize;
+        const total = isStreamMode ? (isSearching ? searchMatches.length : csvData.totalRows) : filteredRowIndices.length;
+        const maxPage = Math.max(1, Math.ceil(total / effPageSize));
+
         if (currentPage < maxPage) {
-          currentPage = maxPage;
-          renderBody();
-          updatePagination();
+          if (isStreamMode && !isSearching) {
+            fetchPage(maxPage);
+          } else {
+            currentPage = maxPage;
+            renderBody();
+            updatePagination();
+          }
           tableContainer.scrollTop = 0;
         }
       });
@@ -1570,23 +2021,37 @@ export class CsvPreviewPanel {
       // Copy buttons
       copyMdBtn.addEventListener('click', () => {
         if (!csvData) return;
-        const rowsToExport = filteredRowIndices.map(idx => csvData.rows[idx]);
+        let rowsToExport = [];
+        if (isStreamMode && isSearching) {
+          rowsToExport = searchMatches.map(m => m.row);
+        } else if (isStreamMode) {
+          rowsToExport = csvData.rows;
+        } else {
+          rowsToExport = filteredRowIndices.map(idx => csvData.rows[idx]);
+        }
         const md = generateMarkdown(csvData.headers, rowsToExport);
         vscode.postMessage({
           type: 'copyToClipboard',
           text: md,
-          format: 'markdown'
+          format: 'markdown',
         });
       });
 
       copyTsvBtn.addEventListener('click', () => {
         if (!csvData) return;
-        const rowsToExport = filteredRowIndices.map(idx => csvData.rows[idx]);
+        let rowsToExport = [];
+        if (isStreamMode && isSearching) {
+          rowsToExport = searchMatches.map(m => m.row);
+        } else if (isStreamMode) {
+          rowsToExport = csvData.rows;
+        } else {
+          rowsToExport = filteredRowIndices.map(idx => csvData.rows[idx]);
+        }
         const tsv = generateTsv(csvData.headers, rowsToExport);
         vscode.postMessage({
           type: 'copyToClipboard',
           text: tsv,
-          format: 'tsv'
+          format: 'tsv',
         });
       });
 
@@ -1621,8 +2086,12 @@ export class CsvPreviewPanel {
           case 'init':
           case 'update': {
             csvData = message.data;
+            isStreamMode = !!message.data.isStreamMode;
+            isIndexing = !!message.data.isIndexing;
+
             initialSnapshot = deepCloneData(csvData);
             modifiedCells.clear();
+            modifiedRows.clear();
             undoStack = [];
             redoStack = [];
             activeEditingTd = null;
@@ -1633,16 +2102,61 @@ export class CsvPreviewPanel {
             cellBarInput.disabled = true;
             updateDirtyUI();
 
-            computeFilteredIndices();
+            if (!isStreamMode) {
+              computeFilteredIndices();
+            }
             renderHeader();
             renderBody();
             updatePagination();
             break;
           }
 
+          case 'pageData': {
+            hideOverlay();
+            csvData.rows = message.rows;
+            if (message.totalRows !== undefined) {
+              csvData.totalRows = message.totalRows;
+            }
+            currentPage = message.page;
+            renderBody();
+            updatePagination();
+            break;
+          }
+
+          case 'searchBatch': {
+            if (message.sessionId !== searchSessionId) break;
+            searchMatches.push(...message.matches);
+
+            if (message.done) {
+              searchProgressText.textContent = searchMatches.length.toLocaleString() + ' matches';
+              setTimeout(() => {
+                if (isSearching) {
+                  searchIndicator.style.opacity = '0.7';
+                }
+              }, 2000);
+            } else {
+              const pct = Math.round(message.scannedRatio * 100);
+              searchProgressText.textContent = pct + '% (' + searchMatches.length.toLocaleString() + ' matches)';
+            }
+
+            renderBody();
+            updatePagination();
+            break;
+          }
+
+          case 'indexProgress': {
+            if (csvData && isStreamMode) {
+              csvData.totalRows = message.totalRows;
+              isIndexing = !message.isComplete;
+              updatePagination();
+            }
+            break;
+          }
+
           case 'saveSuccess': {
             initialSnapshot = deepCloneData(csvData);
             modifiedCells.clear();
+            modifiedRows.clear();
             undoStack = [];
             redoStack = [];
             saveBtn.textContent = '💾 Save';

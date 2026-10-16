@@ -2,7 +2,7 @@
   "name": "hellocsv",
   "displayName": "Hello CSV - Tabular Viewer & Editor",
   "description": "Interactive, theme-aware CSV & TSV tabular viewer and editor for Visual Studio Code.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "sunaram",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -78,7 +78,7 @@
     "watch": "node esbuild.js --watch",
     "build": "node esbuild.js --production",
     "typecheck": "tsc --noEmit",
-    "test": "node test/test-parser.js",
+    "test": "node test/run-all-tests.js",
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {

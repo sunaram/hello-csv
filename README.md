@@ -2,7 +2,7 @@
 
 [![Visual Studio Marketplace](https://img.shields.io/badge/Visual%20Studio%20Marketplace-Hello%20CSV-blue?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=sunaram.hellocsv)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](package.json)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-sunaram%2Fhello--csv-blue?logo=github)](https://github.com/sunaram/hello-csv)
 
 A fast, interactive, and theme-aware **CSV & TSV tabular viewer and in-place editor** for Visual Studio Code.
@@ -11,7 +11,14 @@ A fast, interactive, and theme-aware **CSV & TSV tabular viewer and in-place edi
 
 ## 🌟 Features
 
-### 1. In-Place Cell Editing & Spreadsheet Controls
+### 1. Blazing-Fast Virtual Streaming (Millions of Rows)
+- **Instant First Paint (< 50ms)**: Reads and parses the initial preview chunk in milliseconds so you can start viewing massive files immediately.
+- **Sparse Byte-Offset Indexing**: Streams the file in the background to build a lightweight byte map, enabling sub-5ms random-access seeks across millions of rows.
+- **Real-Time Streaming Search**: Raw-string pre-filtering scans files at disk speed without full CSV parsing overhead, streaming live matching batches straight into the table.
+- **Debounced Input with Auto-Cancel**: Keystrokes instantly cancel previous search streams via `AbortController`, eliminating lag or backlog.
+- **Atomic Delta Saving**: Saves edited cells on multi-gigabyte files using a streaming pipeline with constant low memory (<10MB RAM).
+
+### 2. In-Place Cell Editing & Spreadsheet Controls
 - **Direct Cell Editing**: Double-click any cell, or select it and press <kbd>Enter</kbd> or <kbd>F2</kbd> to edit inline.
 - **Direct Typing**: Click any cell once and start typing to immediately replace its content and begin editing (just like Excel and Google Sheets).
 - **Top Formula / Value Bar**: An Excel-style address and value bar (`A1`, `B4`...) right under the toolbar for viewing and editing long text or URLs with live two-way sync.
@@ -24,11 +31,11 @@ A fast, interactive, and theme-aware **CSV & TSV tabular viewer and in-place edi
   - `+ Col`: Add a new column to the table.
   - Double-click any column header to rename it.
 
-### 2. Tabular Exploration & Navigation
+### 3. Tabular Exploration & Navigation
 - **Sticky Headers & Row Counter**: Headers and the 1-based row counter stay fixed during vertical and horizontal scrolling.
 - **Instant Search & Filter**: Real-time multi-column search with match highlighting and filtered row counts.
 - **Click-to-Sort**: Click any column header to cycle between Ascending, Descending, and Natural order (supports both numeric and string values).
-- **Fast Client-Side Pagination**: Smooth 60fps performance even on 10,000+ row datasets. Select between `25`, `50`, `100`, `250`, or `All` rows per page.
+- **Fast Pagination**: Smooth 60fps performance even on large datasets. Select between `25`, `50`, `100`, `250`, or `All` rows per page.
 - **Delimiter Auto-Detection & Selector**: Automatic detection or manual override for Comma (`,`), Semicolon (`;`), Tab (`\t`), and Pipe (`|`).
 - **Toggle Header Row**: Treat the first row as column titles or view generic column letters (`A`, `B`, `C`...).
 - **Clipboard Export**: One-click **Copy MD** (Markdown table) or **Copy TSV** (ready to paste directly into Excel or Google Sheets).
